@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice Cloning Project</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <header>
+        <div class="logo">
+            <img src="{{ url_for('static', filename='logo.png') }}" alt="Voice Cloning Logo">
+            <h1>Voice Cloning Project</h1>
+        </div>
+    </header>
+    <div class="container">
+        <form id="voiceForm" method="POST" enctype="multipart/form-data">
+            <div class="form-group">
+                <label for="audio_files">Upload Audio Files (MP3)</label>
+                <input type="file" name="audio_files" id="audio_files" multiple accept=".mp3">
+                <button type="submit" name="upload" class="btn btn-upload">Upload</button>
+            </div>
+            <div class="form-group">
+                <label for="emotion">Emotion</label>
+                <select name="emotion" id="emotion">
+                    {% for key in emotions %}
+                        <option value="{{ key }}">{{ key }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="rate">Speech Rate</label>
+                <select name="rate" id="rate">
+                    {% for key in rates %}
+                        <option value="{{ key }}" {% if key == 'medium' %}selected{% endif %}>{{ key }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <button type="submit" name="generate" class="btn btn-generate" id="generateBtn">Generate Audio</button>
+        </form>
+        <div class="loading" id="loadingSpinner" style="display: none;">
+            <div class="spinner"></div>
+            <p>Generating audio, please wait...</p>
+        </div>
+        <div class="message" id="resultMessage" style="display: none;">
+            {% if message %}
+                <h3>Result:</h3>
+                <p>{{ message | safe }}</p>
+            {% endif %}
+        </div>
+    </div>
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
