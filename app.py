@@ -6,6 +6,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from openpyxl import load_workbook, Workbook
+from pydub import AudioSegment  # Import pydub for audio processing
+import traceback
 
 app = Flask(__name__)
 
@@ -46,9 +48,6 @@ def get_emotion_choices():
         "relaxed": "relaxed", "fearful": "fearful", "surprised": "surprised", "calm": "calm",
         "assertive": "assertive", "energetic": "energetic", "warm": "warm", "direct": "direct", "bright": "bright"
     }
-
-def get_speech_rate_choices():
-    return {"x-slow": "x-slow", "slow": "slow", "medium": "medium", "fast": "fast", "x-fast": "x-fast"}
 
 def get_voice_id(name, audio_file):
     try:
@@ -124,16 +123,16 @@ def get_voice_id(name, audio_file):
         print(f"Error in get_voice_id for {name}: Unexpected error - {str(e)}")
         return None
 
-def text_to_speech_speechify(text, voice_id, filename, emotion=None, rate="medium"):
+def text_to_speech_speechify(text, voice_id, filename, emotion=None, rate="0%"):
     """
-    Convert text to speech using Speechify API.
+    Convert text to speech using Speechify API and adjust speed with pydub.
     
     Args:
         text (str): Text to convert to speech
         voice_id (str): Speechify voice ID
         filename (str): Full output audio file path
         emotion (str, optional): Emotion for voice synthesis
-        rate (str, optional): Speech rate (default: "medium")
+        rate (str, optional): Speech rate as a percentage string (e.g., "-20%", "30%")
     
     Returns:
         str or None: Path to generated audio file, or None if generation fails
@@ -160,17 +159,37 @@ def text_to_speech_speechify(text, voice_id, filename, emotion=None, rate="mediu
             "Content-Type": "application/json"
         }
         
-        # Construct data payload
+        # Validate the rate format (e.g., "-20%", "30%")
+        try:
+            # Ensure the rate ends with "%"
+            if not rate.endswith("%"):
+                rate = f"{rate}%"
+            # Extract the numerical part and validate the range
+            rate_value = int(rate.replace("%", ""))
+            if not -50 <= rate_value <= 50:
+                print(f"Error: Speech rate {rate_value}% is out of range (-50% to +50%)")
+                return None
+        except ValueError:
+            print(f"Error: Invalid speech rate format: {rate}")
+            return None
+        
+        # Convert the percentage to a speed multiplier
+        # e.g., -20% -> 0.8 (80% of normal speed), +30% -> 1.3 (130% of normal speed)
+        speed_multiplier = 1.0 + (rate_value / 100.0)
+        
+        # Construct data payload (without speech_rate, since we'll adjust speed locally)
         data = {
             "input": text,
             "voice_id": voice_id,
-            "audio_format": "mp3",
-            "speech_rate": rate  # Use selected rate
+            "audio_format": "mp3"
         }
         
         # Add emotion if provided
         if emotion and emotion.lower() != "none":
             data["emotion"] = emotion
+        
+        # Log the payload for debugging
+        print(f"Sending API request with payload: {data}")
         
         # Make API request
         response = requests.post(
@@ -191,19 +210,52 @@ def text_to_speech_speechify(text, voice_id, filename, emotion=None, rate="mediu
                 print("Error: No audio data received from Speechify API")
                 return None
             
-            with open(filename, "wb") as f:
+            # Save the original audio file temporarily
+            temp_filename = filename + ".temp.mp3"
+            with open(temp_filename, "wb") as f:
                 f.write(base64.b64decode(audio_data))
             
             # Verify file was created
+            if not (os.path.exists(temp_filename) and os.path.getsize(temp_filename) > 0):
+                print("Error: Failed to create a valid temporary audio file")
+                return None
+            
+            # Load the audio file with pydub
+            audio = AudioSegment.from_mp3(temp_filename)
+            
+            # Adjust the playback speed
+            if speed_multiplier != 1.0:
+                # Export to WAV for processing
+                wav_temp = filename + ".temp.wav"
+                audio.export(wav_temp, format="wav")
+                
+                # Load the WAV file and adjust speed
+                audio = AudioSegment.from_wav(wav_temp)
+                new_frame_rate = int(audio.frame_rate * speed_multiplier)
+                audio = audio._spawn(audio.raw_data, overrides={"frame_rate": new_frame_rate})
+                
+                # Export the adjusted audio back to MP3
+                audio.export(filename, format="mp3")
+                
+                # Clean up temporary files
+                os.remove(wav_temp)
+            else:
+                # If speed_multiplier is 1.0, just rename the temp file
+                os.rename(temp_filename, filename)
+            
+            # Clean up the temporary MP3 file if it still exists
+            if os.path.exists(temp_filename):
+                os.remove(temp_filename)
+            
+            # Verify the final file was created
             if os.path.exists(filename) and os.path.getsize(filename) > 0:
-                print(f"Successfully generated audio file: {filename}")
+                print(f"Successfully generated audio file with adjusted speed: {filename}")
                 return filename
             else:
-                print("Error: Failed to create a valid audio file")
+                print("Error: Failed to create a valid audio file after speed adjustment")
                 return None
         
         else:
-            # Print error details if request was unsuccessful
             print(f"API Error: Status code {response.status_code}")
             print(f"Response: {response.text}")
             return None
@@ -280,8 +332,23 @@ def index():
         elif 'generate' in request.form:
             print("Generate button clicked")
             emotion = request.form['emotion']
-            rate = request.form['rate']
-            print(f"Selected emotion: {emotion}, rate: {rate}")
+            # The rate from the form is a numerical value (e.g., "-20", "30")
+            rate = request.form.get('rate', '0')  # Default to '0' if not provided
+
+            # Validate and format the rate
+            try:
+                rate_value = int(rate)  # Convert to integer to validate
+                if not -50 <= rate_value <= 50:
+                    message = f"Error: Speech rate {rate_value}% is out of range (-50% to +50%)."
+                    print(message)
+                else:
+                    rate = f"{rate_value}%"  # Convert to string with "%" (e.g., "-20%")
+                    print(f"Selected emotion: {emotion}, rate: {rate}")
+            except ValueError:
+                message = f"Error: Invalid speech rate format: {rate}. Please select a value between -50 and 50."
+                print(message)
+                rate = "0%"  # Fallback to default rate
+
             user_voice_ids = {}
 
             # Process only the files uploaded in this session
@@ -323,25 +390,34 @@ def index():
                             os.makedirs(user_folder, exist_ok=True)
                             print(f"Created user folder: {user_folder}")
                             for text_id, data in texts.items():
-                                print(f"Generating audio for {user_id}, text: {data['text']}")
+                                # Modify the file name to include emotion and rate
+                                base_file_name = data['file_name']  # e.g., "T001"
+                                # Handle emotion in the file name
+                                emotion_part = emotion.lower() if emotion and emotion.lower() != "none" else "neutral"
+                                # Handle rate in the file name (e.g., "-20%" -> "minus20", "30%" -> "plus30")
+                                rate_part = f"{'minus' if rate_value < 0 else 'plus'}{abs(rate_value)}" if rate_value != 0 else "normal"
+                                # Construct the new file name (e.g., "T001_cheerful_minus20.mp3")
+                                new_file_name = f"{base_file_name}_{emotion_part}_{rate_part}.mp3"
+                                output_path = os.path.join(user_folder, new_file_name)
+                                
+                                print(f"Generating audio for {user_id}, text: {data['text']}, emotion: {emotion}, rate: {rate}, output: {new_file_name}")
                                 filepath = text_to_speech_speechify(
                                     data["text"],
                                     voice_id,
-                                    os.path.join(user_folder, f"{data['file_name']}.mp3"),
+                                    output_path,
                                     emotion,
                                     rate
                                 )
                                 if filepath:
-                                    message += f"Generated {data['file_name']}.mp3 for {user_id}<br>"
+                                    message += f"Generated {new_file_name} for {user_id}<br>"
                                 else:
-                                    message += f"Failed to generate {data['file_name']} for {user_id}<br>"
+                                    message += f"Failed to generate {new_file_name} for {user_id}<br>"
 
             # Clear uploaded files from session after processing
             session.pop('uploaded_files', None)
 
     emotions = get_emotion_choices()
-    rates = get_speech_rate_choices()
-    return render_template('index.html', emotions=emotions, rates=rates, message=message)
+    return render_template('index.html', emotions=emotions, message=message)
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
